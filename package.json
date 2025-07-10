@@ -1,0 +1,19 @@
+{
+  "name": "exif-mcp-server",
+  "version": "1.2.0",
+  "description": "MCP server for parsing EXIF data from photos and creating geotagged tours",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.1",
+    "exifr": "^7.1.3",
+    "archiver": "^6.0.1",
+    "sharp": "^0.33.2"
+  },
+  "keywords": ["mcp", "exif", "photo", "metadata", "kmz", "geotagging"],
+  "author": "Tim (via AJ)",
+  "license": "MIT"
+}

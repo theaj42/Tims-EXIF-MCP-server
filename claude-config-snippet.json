@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "exif": {
+      "command": "node",
+      "args": ["${HOME}/git/exif-mcp-server/index.js"]
+    }
+  }
+}
