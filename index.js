@@ -590,54 +590,26 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           throw new Error('filepaths must be a non-empty array');
         }
         
+        if (filepaths.length > 1000) {
+          throw new Error('Maximum 1000 files allowed per batch');
+        }
+        
         // Validate output path
         const safeOutputPath = validateFilePath(outputPath);
         if (!safeOutputPath.endsWith('.kmz')) {
           throw new Error('Output path must end with .kmz extension');
         }
         
-        // Collect photo data with GPS
-        const photoData = [];
-        let photoNumber = 1;
+        // Validate other inputs
+        validateStringInput(title, 'title', 200);
+        validateStringInput(description, 'description', 2000);
+        validateNumericInput(thumbnailSize, 'thumbnailSize', 100, 2000);
+        validateBooleanInput(includeFullImages, 'includeFullImages');
+        validateBooleanInput(drawPath, 'drawPath');
+        validateBooleanInput(numberPhotos, 'numberPhotos');
         
-        for (const filepath of filepaths) {
-          try {
-            // Validate and sanitize file path
-            const safePath = validateFilePath(filepath);
-            validateFileExists(safePath);
-            validateImageFile(safePath);
-            
-            const exifData = await exifr.parse(safePath, {
-              gps: true,
-              pick: ['DateTimeOriginal', 'CreateDate', 'Make', 'Model', 'LensModel']
-            });
-            
-            if (exifData && exifData.latitude && exifData.longitude) {
-              const filename = path.basename(safePath);
-              const photoId = `photo_${photoNumber.toString().padStart(3, '0')}`;
-              
-              photoData.push({
-                id: photoId,
-                number: photoNumber,
-                filepath: safePath,
-                filename: filename,
-                latitude: exifData.latitude,
-                longitude: exifData.longitude,
-                altitude: exifData.altitude || 0,
-                datetime: exifData.DateTimeOriginal || exifData.CreateDate || new Date(),
-                camera: `${exifData.Make || ''} ${exifData.Model || ''}`.trim(),
-                lens: exifData.LensModel || '',
-                thumbnailName: `${photoId}_thumb.jpg`,
-                fullImageName: includeFullImages ? `${photoId}_full.jpg` : null
-              });
-              
-              photoNumber++;
-            }
-          } catch (error) {
-            // Skip files that can't be processed - this is normal for non-image files
-            // Error details are available in the final summary if needed
-          }
-        }
+        // Collect photo data with GPS
+        const photoData = await processPhotosForKMZ(filepaths);
         
         if (photoData.length === 0) {
           return {
@@ -663,26 +635,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         await writeFile(path.join(tempDir, 'doc.kml'), kmlContent);
         
         // Generate thumbnails
-        for (const photo of photoData) {
-          try {
-            const thumbnailPath = path.join(tempDir, 'images', photo.thumbnailName);
-            await sharp(photo.filepath)
-              .resize(thumbnailSize, thumbnailSize, { fit: 'inside' })
-              .jpeg({ quality: 85 })
-              .toFile(thumbnailPath);
-              
-            // Include full images if requested
-            if (includeFullImages && photo.fullImageName) {
-              const fullImagePath = path.join(tempDir, 'images', photo.fullImageName);
-              await sharp(photo.filepath)
-                .jpeg({ quality: 90 })
-                .toFile(fullImagePath);
-            }
-          } catch (error) {
-            // Skip thumbnails that can't be created - this is handled gracefully
-            // Error details are available in the final summary if needed
-          }
-        }
+        await createThumbnails(photoData, tempDir, thumbnailSize, includeFullImages);
         
         // Create KMZ archive
         const output = createWriteStream(safeOutputPath);
@@ -736,6 +689,77 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     };
   }
 });
+
+// Helper function to process photos and extract GPS data
+async function processPhotosForKMZ(filepaths) {
+  const photoData = [];
+  let photoNumber = 1;
+  
+  for (const filepath of filepaths) {
+    try {
+      // Validate and sanitize file path
+      const safePath = validateFilePath(filepath);
+      validateFileExists(safePath);
+      validateImageFile(safePath);
+      
+      const exifData = await exifr.parse(safePath, {
+        gps: true,
+        pick: ['DateTimeOriginal', 'CreateDate', 'Make', 'Model', 'LensModel']
+      });
+      
+      if (exifData && exifData.latitude && exifData.longitude) {
+        const filename = path.basename(safePath);
+        const photoId = `photo_${photoNumber.toString().padStart(3, '0')}`;
+        
+        photoData.push({
+          id: photoId,
+          number: photoNumber,
+          filepath: safePath,
+          filename: filename,
+          latitude: exifData.latitude,
+          longitude: exifData.longitude,
+          altitude: exifData.altitude || 0,
+          datetime: exifData.DateTimeOriginal || exifData.CreateDate || new Date(),
+          camera: `${exifData.Make || ''} ${exifData.Model || ''}`.trim(),
+          lens: exifData.LensModel || '',
+          thumbnailName: `${photoId}_thumb.jpg`,
+          fullImageName: `${photoId}_full.jpg`
+        });
+        
+        photoNumber++;
+      }
+    } catch (error) {
+      // Skip files that can't be processed - this is normal for non-image files
+      // Error details are available in the final summary if needed
+    }
+  }
+  
+  return photoData;
+}
+
+// Helper function to create thumbnails for KMZ
+async function createThumbnails(photoData, tempDir, thumbnailSize, includeFullImages) {
+  for (const photo of photoData) {
+    try {
+      const thumbnailPath = path.join(tempDir, 'images', photo.thumbnailName);
+      await sharp(photo.filepath)
+        .resize(thumbnailSize, thumbnailSize, { fit: 'inside' })
+        .jpeg({ quality: 85 })
+        .toFile(thumbnailPath);
+        
+      // Include full images if requested
+      if (includeFullImages && photo.fullImageName) {
+        const fullImagePath = path.join(tempDir, 'images', photo.fullImageName);
+        await sharp(photo.filepath)
+          .jpeg({ quality: 90 })
+          .toFile(fullImagePath);
+      }
+    } catch (error) {
+      // Skip thumbnails that can't be created - this is handled gracefully
+      // Error details are available in the final summary if needed
+    }
+  }
+}
 
 // Helper function to generate KML content
 function generateKML(photoData, title, description, drawPath, numberPhotos) {
