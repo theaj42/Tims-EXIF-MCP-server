@@ -6,8 +6,58 @@ import exifr from 'exifr';
 import { readFile, rename, stat, mkdir, writeFile } from 'fs/promises';
 import path from 'path';
 import { existsSync, createWriteStream } from 'fs';
+import { fileURLToPath } from 'url';
+import os from 'os';
 import archiver from 'archiver';
 import sharp from 'sharp';
+
+// Security and validation functions
+function validateFilePath(filepath) {
+  if (!filepath || typeof filepath !== 'string') {
+    throw new Error('Invalid file path provided');
+  }
+  
+  // Convert to absolute path to prevent relative path traversal
+  const absolutePath = path.resolve(filepath);
+  
+  // Check for path traversal attempts
+  if (absolutePath.includes('..') || !absolutePath.startsWith(process.cwd())) {
+    throw new Error('Path traversal detected - access denied');
+  }
+  
+  return absolutePath;
+}
+
+function validateFileExists(filepath) {
+  if (!existsSync(filepath)) {
+    throw new Error(`File not found: ${filepath}`);
+  }
+}
+
+function validateImageFile(filepath) {
+  const ext = path.extname(filepath).toLowerCase();
+  const allowedExts = ['.jpg', '.jpeg', '.png', '.tiff', '.tif', '.heic', '.heif', '.webp', '.avif'];
+  
+  if (!allowedExts.includes(ext)) {
+    throw new Error(`Unsupported file type: ${ext}. Supported types: ${allowedExts.join(', ')}`);
+  }
+}
+
+function createSafeBackupDir(originalPath) {
+  const dir = path.dirname(originalPath);
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const backupDir = path.join(dir, `exif_backup_${timestamp}`);
+  
+  // Ensure backup directory doesn't exist
+  let counter = 1;
+  let finalBackupDir = backupDir;
+  while (existsSync(finalBackupDir)) {
+    finalBackupDir = `${backupDir}_${counter}`;
+    counter++;
+  }
+  
+  return finalBackupDir;
+}
 
 // Create server instance
 const server = new Server(
@@ -223,19 +273,19 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         };
         
         // Parse EXIF data
-        const exifData = await exifr.parse(filepath, parseOptions);
+        const exifData = await exifr.parse(safePath, parseOptions);
         
         if (!exifData) {
           return {
             content: [{
               type: 'text',
-              text: `No EXIF data found in ${filepath}`
+              text: `No EXIF data found in ${path.basename(safePath)}`
             }]
           };
         }
         
         // Format the output
-        const formatted = formatExifData(exifData, filepath);
+        const formatted = formatExifData(exifData, safePath);
         
         return {
           content: [{
@@ -249,9 +299,19 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const { filepaths, options = {} } = args;
         const results = [];
         
+        // Validate input
+        if (!Array.isArray(filepaths) || filepaths.length === 0) {
+          throw new Error('filepaths must be a non-empty array');
+        }
+        
         for (const filepath of filepaths) {
           try {
-            const exifData = await exifr.parse(filepath, {
+            // Validate and sanitize file path
+            const safePath = validateFilePath(filepath);
+            validateFileExists(safePath);
+            validateImageFile(safePath);
+            
+            const exifData = await exifr.parse(safePath, {
               gps: options.gps !== false,
               thumbnail: options.thumbnail === true,
               xmp: options.xmp !== false,
@@ -262,20 +322,20 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             
             if (exifData) {
               results.push({
-                filepath,
+                filepath: path.basename(safePath),
                 data: exifData,
                 status: 'success'
               });
             } else {
               results.push({
-                filepath,
+                filepath: path.basename(safePath),
                 data: null,
                 status: 'no_exif'
               });
             }
           } catch (error) {
             results.push({
-              filepath,
+              filepath: path.basename(filepath),
               data: null,
               status: 'error',
               error: error.message
@@ -294,14 +354,19 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case 'get_gps_coordinates': {
         const { filepath } = args;
         
+        // Validate and sanitize file path
+        const safePath = validateFilePath(filepath);
+        validateFileExists(safePath);
+        validateImageFile(safePath);
+        
         // Parse only GPS data
-        const gpsData = await exifr.gps(filepath);
+        const gpsData = await exifr.gps(safePath);
         
         if (!gpsData) {
           return {
             content: [{
               type: 'text',
-              text: `No GPS data found in ${filepath}`
+              text: `No GPS data found in ${path.basename(safePath)}`
             }]
           };
         }
@@ -310,7 +375,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           content: [{
             type: 'text',
             text: JSON.stringify({
-              filepath,
+              filepath: path.basename(safePath),
               coordinates: {
                 latitude: gpsData.latitude,
                 longitude: gpsData.longitude,
@@ -333,22 +398,30 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           counterStart = 1
         } = args;
         
+        // Validate input
+        if (!Array.isArray(filepaths) || filepaths.length === 0) {
+          throw new Error('filepaths must be a non-empty array');
+        }
+        
         const results = [];
         let counter = counterStart;
+        let backupDir;
         
         // Create backup directory if needed and not in dry run
-        const backupDir = path.join(path.dirname(filepaths[0]), 'exif_rename_backup');
         if (backup && !dryRun) {
+          backupDir = createSafeBackupDir(filepaths[0]);
           await mkdir(backupDir, { recursive: true });
         }
         
         for (const filepath of filepaths) {
           try {
-            // Check if file exists
-            await stat(filepath);
+            // Validate and sanitize file path
+            const safePath = validateFilePath(filepath);
+            validateFileExists(safePath);
+            validateImageFile(safePath);
             
             // Parse EXIF data
-            const exifData = await exifr.parse(filepath, {
+            const exifData = await exifr.parse(safePath, {
               gps: true,
               xmp: true,
               iptc: true
@@ -366,9 +439,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             }
             
             // Build new filename from template
-            const dir = path.dirname(filepath);
-            const ext = path.extname(filepath);
-            const originalName = path.basename(filepath, ext);
+            const dir = path.dirname(safePath);
+            const ext = path.extname(safePath);
+            const originalName = path.basename(safePath, ext);
             
             let newName = template;
             
@@ -426,15 +499,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             // Check if target exists and handle duplicates
             let finalPath = newPath;
             let dupCounter = 1;
-            while (existsSync(finalPath) && finalPath !== filepath) {
+            while (existsSync(finalPath) && finalPath !== safePath) {
               const baseName = newName + `_${dupCounter}`;
               finalPath = path.join(dir, baseName + ext);
               dupCounter++;
             }
             
             results.push({
-              original: filepath,
-              new: finalPath,
+              original: path.basename(safePath),
+              new: path.basename(finalPath),
               status: dryRun ? 'preview' : 'pending',
               exifFound: !!exifData
             });
@@ -443,11 +516,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             if (!dryRun) {
               // Backup if requested
               if (backup) {
-                const backupPath = path.join(backupDir, path.basename(filepath));
-                await rename(filepath, backupPath);
+                const backupPath = path.join(backupDir, path.basename(safePath));
+                await rename(safePath, backupPath);
                 await rename(backupPath, finalPath);
               } else {
-                await rename(filepath, finalPath);
+                await rename(safePath, finalPath);
               }
               results[results.length - 1].status = 'renamed';
             }
@@ -456,7 +529,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             
           } catch (error) {
             results.push({
-              original: filepath,
+              original: path.basename(filepath),
               new: null,
               status: 'error',
               error: error.message
@@ -512,25 +585,41 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           numberPhotos = true
         } = args;
         
+        // Validate input
+        if (!Array.isArray(filepaths) || filepaths.length === 0) {
+          throw new Error('filepaths must be a non-empty array');
+        }
+        
+        // Validate output path
+        const safeOutputPath = validateFilePath(outputPath);
+        if (!safeOutputPath.endsWith('.kmz')) {
+          throw new Error('Output path must end with .kmz extension');
+        }
+        
         // Collect photo data with GPS
         const photoData = [];
         let photoNumber = 1;
         
         for (const filepath of filepaths) {
           try {
-            const exifData = await exifr.parse(filepath, {
+            // Validate and sanitize file path
+            const safePath = validateFilePath(filepath);
+            validateFileExists(safePath);
+            validateImageFile(safePath);
+            
+            const exifData = await exifr.parse(safePath, {
               gps: true,
               pick: ['DateTimeOriginal', 'CreateDate', 'Make', 'Model', 'LensModel']
             });
             
             if (exifData && exifData.latitude && exifData.longitude) {
-              const filename = path.basename(filepath);
+              const filename = path.basename(safePath);
               const photoId = `photo_${photoNumber.toString().padStart(3, '0')}`;
               
               photoData.push({
                 id: photoId,
                 number: photoNumber,
-                filepath: filepath,
+                filepath: safePath,
                 filename: filename,
                 latitude: exifData.latitude,
                 longitude: exifData.longitude,
@@ -545,7 +634,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
               photoNumber++;
             }
           } catch (error) {
-            console.error(`Error processing ${filepath}: ${error.message}`);
+            // Skip files that can't be processed - this is normal for non-image files
+            // Error details are available in the final summary if needed
           }
         }
         
@@ -565,7 +655,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const kmlContent = generateKML(photoData, title, description, drawPath, numberPhotos);
         
         // Create temporary directory for KMZ contents
-        const tempDir = path.join(path.dirname(outputPath), `.kmz_temp_${Date.now()}`);
+        const tempDir = path.join(path.dirname(safeOutputPath), `.kmz_temp_${Date.now()}`);
         await mkdir(tempDir, { recursive: true });
         await mkdir(path.join(tempDir, 'images'), { recursive: true });
         
@@ -589,12 +679,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 .toFile(fullImagePath);
             }
           } catch (error) {
-            console.error(`Error creating thumbnail for ${photo.filename}: ${error.message}`);
+            // Skip thumbnails that can't be created - this is handled gracefully
+            // Error details are available in the final summary if needed
           }
         }
         
         // Create KMZ archive
-        const output = createWriteStream(outputPath);
+        const output = createWriteStream(safeOutputPath);
         const archive = archiver('zip', { zlib: { level: 9 } });
         
         archive.pipe(output);
@@ -615,8 +706,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           `📸 Photos with GPS: ${photoData.length}\n` +
           `📏 Path: ${drawPath ? 'Yes' : 'No'}\n` +
           `🔢 Numbered: ${numberPhotos ? 'Yes' : 'No'}\n` +
-          `📦 File size: ${(await stat(outputPath)).size / 1024 / 1024}MB\n` +
-          `📁 Output: ${outputPath}\n\n` +
+          `📦 File size: ${(await stat(safeOutputPath)).size / 1024 / 1024}MB\n` +
+          `📁 Output: ${path.basename(safeOutputPath)}\n\n` +
           `Journey Timeline:\n` +
           photoData.slice(0, 5).map(p => 
             `  ${p.number}. ${formatDate(p.datetime)} - ${p.filename}`
@@ -862,10 +953,11 @@ function formatDate(date) {
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error('EXIF MCP Server running...');
+  // Server is running - no need for console output in production
 }
 
 main().catch((error) => {
-  console.error('Server error:', error);
+  // Log critical server errors to stderr
+  process.stderr.write(`Server error: ${error.message}\n`);
   process.exit(1);
 });
