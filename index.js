@@ -6,8 +6,6 @@ import exifr from 'exifr';
 import { readFile, rename, stat, mkdir, writeFile } from 'fs/promises';
 import path from 'path';
 import { existsSync, createWriteStream } from 'fs';
-import { fileURLToPath } from 'url';
-import os from 'os';
 import archiver from 'archiver';
 import sharp from 'sharp';
 
@@ -57,6 +55,44 @@ function createSafeBackupDir(originalPath) {
   }
   
   return finalBackupDir;
+}
+
+// Input validation functions
+function validateTemplateString(template) {
+  if (!template || typeof template !== 'string') {
+    throw new Error('Template must be a non-empty string');
+  }
+  
+  // Check for potentially dangerous template injections
+  const dangerousPatterns = [/\$\{.*\}/, /\$\(.*\)/, /`.*`/];
+  for (const pattern of dangerousPatterns) {
+    if (pattern.test(template)) {
+      throw new Error('Template contains potentially dangerous patterns');
+    }
+  }
+  
+  return template;
+}
+
+function validateNumericInput(value, name, min = 0, max = Infinity) {
+  if (typeof value !== 'number' || isNaN(value) || value < min || value > max) {
+    throw new Error(`${name} must be a number between ${min} and ${max}`);
+  }
+  return value;
+}
+
+function validateBooleanInput(value, name) {
+  if (typeof value !== 'boolean') {
+    throw new Error(`${name} must be a boolean value`);
+  }
+  return value;
+}
+
+function validateStringInput(value, name, maxLength = 1000) {
+  if (typeof value !== 'string' || value.length > maxLength) {
+    throw new Error(`${name} must be a string with max length ${maxLength}`);
+  }
+  return value;
 }
 
 // Create server instance
@@ -284,6 +320,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     switch (name) {
       case 'parse_exif': {
         const { filepath, options = {} } = args;
+        
+        // Validate and sanitize file path
+        const safePath = validateFilePath(filepath);
+        validateFileExists(safePath);
+        validateImageFile(safePath);
         
         // Default options
         const parseOptions = {
@@ -730,7 +771,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           
           // Use sharp to strip EXIF data while preserving specific fields
           const image = sharp(safePath);
-          const metadata = await image.metadata();
           
           // Create a clean image without EXIF data
           const cleanImageBuffer = await image
