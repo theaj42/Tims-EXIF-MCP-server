@@ -467,6 +467,18 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           throw new Error('filepaths must be a non-empty array');
         }
         
+        if (filepaths.length > 1000) {
+          throw new Error('Maximum 1000 files allowed per batch');
+        }
+        
+        // Validate template and other inputs
+        validateTemplateString(template);
+        validateStringInput(dateFormat, 'dateFormat', 50);
+        validateStringInput(timeFormat, 'timeFormat', 50);
+        validateBooleanInput(dryRun, 'dryRun');
+        validateBooleanInput(backup, 'backup');
+        validateNumericInput(counterStart, 'counterStart', 1, 9999);
+        
         const results = [];
         let counter = counterStart;
         let backupDir;
@@ -521,7 +533,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
               // Camera info
               const camera = (exifData.Make || 'Unknown').replace(/\s+/g, '');
               const model = (exifData.Model || '').replace(/\s+/g, '');
-              const lens = (exifData.LensModel || '').replace(/[\/\s]+/g, '-');
+              const lens = (exifData.LensModel || '').replace(/[/\s]+/g, '-');
               
               // Replace variables
               newName = newName
@@ -564,7 +576,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             let finalPath = newPath;
             let dupCounter = 1;
             while (existsSync(finalPath) && finalPath !== safePath) {
-              const baseName = newName + `_${dupCounter}`;
+              const baseName = `${newName}_${dupCounter}`;
               finalPath = path.join(dir, baseName + ext);
               dupCounter++;
             }
@@ -605,7 +617,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         let output = `📸 Batch Rename Results\n${'='.repeat(50)}\n\n`;
         output += `Mode: ${dryRun ? '🔍 PREVIEW MODE (no files changed)' : '✅ RENAME MODE'}\n`;
         output += `Template: "${template}"\n`;
-        if (backup && !dryRun) output += `Backups: ${backupDir}\n`;
+        if (backup && !dryRun) {output += `Backups: ${backupDir}\n`;}
         output += `\n`;
         
         let successCount = 0;
@@ -725,12 +737,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           `🔢 Numbered: ${numberPhotos ? 'Yes' : 'No'}\n` +
           `📦 File size: ${(await stat(safeOutputPath)).size / 1024 / 1024}MB\n` +
           `📁 Output: ${path.basename(safeOutputPath)}\n\n` +
-          `Journey Timeline:\n` +
+          `Journey Timeline:\n${ 
           photoData.slice(0, 5).map(p => 
             `  ${p.number}. ${formatDate(p.datetime)} - ${p.filename}`
-          ).join('\n') +
-          (photoData.length > 5 ? `\n  ... and ${photoData.length - 5} more photos` : '') +
-          `\n\n💡 Open in Google Earth to view your photo journey!`;
+          ).join('\n') 
+          }${photoData.length > 5 ? `\n  ... and ${photoData.length - 5} more photos` : '' 
+          }\n\n💡 Open in Google Earth to view your photo journey!`;
         
         return {
           content: [{
@@ -757,7 +769,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         try {
           // Create backup if requested
           if (backup) {
-            const backupPath = safePath + '.original';
+            const backupPath = `${safePath}.original`;
             
             // Check if backup already exists
             if (existsSync(backupPath)) {
@@ -936,10 +948,10 @@ function generateKML(photoData, title, description, drawPath, numberPhotos) {
     desc.push(`<img src="images/${photo.thumbnailName}" width="${Math.min(400, 800)}" /><br/>`);
     desc.push(`<b>Photo #${photo.number}</b><br/>`);
     desc.push(`Date: ${formatDate(photo.datetime)}<br/>`);
-    if (photo.camera) desc.push(`Camera: ${photo.camera}<br/>`);
-    if (photo.lens) desc.push(`Lens: ${photo.lens}<br/>`);
+    if (photo.camera) {desc.push(`Camera: ${photo.camera}<br/>`);}
+    if (photo.lens) {desc.push(`Lens: ${photo.lens}<br/>`);}
     desc.push(`GPS: ${photo.latitude.toFixed(6)}, ${photo.longitude.toFixed(6)}<br/>`);
-    if (photo.altitude > 0) desc.push(`Altitude: ${photo.altitude.toFixed(1)}m<br/>`);
+    if (photo.altitude > 0) {desc.push(`Altitude: ${photo.altitude.toFixed(1)}m<br/>`);}
     desc.push(']]>');
     
     kml.push(`      <description>${desc.join('')}</description>`);
@@ -1031,20 +1043,20 @@ function formatExifData(exifData, filepath) {
   // Camera Information
   if (exifData.Make || exifData.Model) {
     output.push('📷 Camera Information:');
-    if (exifData.Make) output.push(`  Make: ${exifData.Make}`);
-    if (exifData.Model) output.push(`  Model: ${exifData.Model}`);
-    if (exifData.LensModel) output.push(`  Lens: ${exifData.LensModel}`);
+    if (exifData.Make) {output.push(`  Make: ${exifData.Make}`);}
+    if (exifData.Model) {output.push(`  Model: ${exifData.Model}`);}
+    if (exifData.LensModel) {output.push(`  Lens: ${exifData.LensModel}`);}
     output.push('');
   }
   
   // Photo Settings
   if (exifData.FNumber || exifData.ExposureTime || exifData.ISO) {
     output.push('⚙️  Photo Settings:');
-    if (exifData.FNumber) output.push(`  Aperture: f/${exifData.FNumber}`);
-    if (exifData.ExposureTime) output.push(`  Shutter Speed: ${formatShutterSpeed(exifData.ExposureTime)}`);
-    if (exifData.ISO) output.push(`  ISO: ${exifData.ISO}`);
-    if (exifData.FocalLength) output.push(`  Focal Length: ${exifData.FocalLength}mm`);
-    if (exifData.Flash) output.push(`  Flash: ${exifData.Flash}`);
+    if (exifData.FNumber) {output.push(`  Aperture: f/${exifData.FNumber}`);}
+    if (exifData.ExposureTime) {output.push(`  Shutter Speed: ${formatShutterSpeed(exifData.ExposureTime)}`);}
+    if (exifData.ISO) {output.push(`  ISO: ${exifData.ISO}`);}
+    if (exifData.FocalLength) {output.push(`  Focal Length: ${exifData.FocalLength}mm`);}
+    if (exifData.Flash) {output.push(`  Flash: ${exifData.Flash}`);}
     output.push('');
   }
   
@@ -1061,7 +1073,7 @@ function formatExifData(exifData, filepath) {
     output.push('📍 GPS Location:');
     output.push(`  Latitude: ${exifData.latitude}`);
     output.push(`  Longitude: ${exifData.longitude}`);
-    if (exifData.altitude) output.push(`  Altitude: ${exifData.altitude}m`);
+    if (exifData.altitude) {output.push(`  Altitude: ${exifData.altitude}m`);}
     output.push(`  Google Maps: https://www.google.com/maps?q=${exifData.latitude},${exifData.longitude}`);
     output.push('');
   }
@@ -1072,8 +1084,8 @@ function formatExifData(exifData, filepath) {
     if (exifData.ImageWidth && exifData.ImageHeight) {
       output.push(`  Dimensions: ${exifData.ImageWidth} x ${exifData.ImageHeight}`);
     }
-    if (exifData.Orientation) output.push(`  Orientation: ${exifData.Orientation}`);
-    if (exifData.ColorSpace) output.push(`  Color Space: ${exifData.ColorSpace}`);
+    if (exifData.Orientation) {output.push(`  Orientation: ${exifData.Orientation}`);}
+    if (exifData.ColorSpace) {output.push(`  Color Space: ${exifData.ColorSpace}`);}
     output.push('');
   }
   
