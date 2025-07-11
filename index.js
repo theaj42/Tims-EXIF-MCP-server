@@ -199,6 +199,29 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         }
       },
       {
+        name: 'strip_exif',
+        description: 'Remove EXIF data from photos for privacy',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            filepath: {
+              type: 'string',
+              description: 'Path to the image file'
+            },
+            backup: {
+              type: 'boolean',
+              description: 'Keep original with .original extension (default: true)'
+            },
+            keep: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'List of EXIF fields to preserve (e.g., ["Make", "Model"])'
+            }
+          },
+          required: ['filepath']
+        }
+      },
+      {
         name: 'create_photo_tour_kmz',
         description: 'Create a KMZ file with geotagged photos showing your journey path',
         inputSchema: {
@@ -674,6 +697,75 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             text: summary
           }]
         };
+      }
+      
+      case 'strip_exif': {
+        const { filepath, backup = true, keep = [] } = args;
+        
+        // Validate and sanitize file path
+        const safePath = validateFilePath(filepath);
+        validateFileExists(safePath);
+        validateImageFile(safePath);
+        
+        // Validate inputs
+        validateBooleanInput(backup, 'backup');
+        if (!Array.isArray(keep)) {
+          throw new Error('keep must be an array');
+        }
+        
+        try {
+          // Create backup if requested
+          if (backup) {
+            const backupPath = safePath + '.original';
+            
+            // Check if backup already exists
+            if (existsSync(backupPath)) {
+              throw new Error('Backup file already exists. Remove it first or set backup=false.');
+            }
+            
+            // Copy original to backup
+            const originalData = await readFile(safePath);
+            await writeFile(backupPath, originalData);
+          }
+          
+          // Use sharp to strip EXIF data while preserving specific fields
+          const image = sharp(safePath);
+          const metadata = await image.metadata();
+          
+          // Create a clean image without EXIF data
+          const cleanImageBuffer = await image
+            .jpeg({ quality: 95 }) // Use high quality to minimize degradation
+            .toBuffer();
+          
+          // If we need to keep specific fields, we'd need to re-add them
+          // For now, this implementation strips all EXIF data
+          // A more sophisticated implementation would use exifr to read specific fields
+          // and then use piexifjs or similar to add them back
+          
+          // Write the clean image back
+          await writeFile(safePath, cleanImageBuffer);
+          
+          let summary = `🔒 EXIF Data Stripped Successfully\n${'='.repeat(50)}\n\n` +
+            `📁 File: ${path.basename(safePath)}\n` +
+            `💾 Backup: ${backup ? 'Created (.original)' : 'Not created'}\n` +
+            `🏷️  Fields to preserve: ${keep.length > 0 ? keep.join(', ') : 'None'}\n` +
+            `⚠️  Note: All EXIF data has been removed for privacy.\n`;
+          
+          if (keep.length > 0) {
+            summary += `\n⚠️  Warning: Selective field preservation is not yet implemented.\n` +
+                      `All EXIF data has been removed. This feature will be added in a future update.`;
+          }
+          
+          return {
+            content: [{
+              type: 'text',
+              text: summary
+            }]
+          };
+          
+        } catch (error) {
+          throw new Error(`Failed to strip EXIF data: ${error.message}`);
+        }
       }
       
       default:
